@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cluster Policy Viewer</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="page-glow page-glow-left"></div>
+    <div class="page-glow page-glow-right"></div>
+
+    <main class="page-shell">
+      <section class="hero-panel">
+        <div class="eyebrow">Visualization / Kubernetes-like Mini Cluster</div>
+        <div class="hero-layout">
+          <div class="hero-copy">
+            <h1>Manual Pod Scheduler</h1>
+            <p>
+              Соберите кластер из нод нужных типов, задайте pod request по CPU
+              и памяти, нажмите deploy и посмотрите, на какую ноду scheduler
+              положит этот pod.
+            </p>
+          </div>
+
+          <form class="controls-panel">
+            <label class="field">
+              <span>Policy</span>
+              <select id="policy-select"></select>
+            </label>
+
+            <div class="policy-readout">
+              <span class="policy-readout-label">Selected</span>
+              <span id="policy-pill" class="policy-pill">HYBRID</span>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel inventory-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-kicker">Cluster Builder</div>
+            <h2>Add Nodes To The Cluster</h2>
+          </div>
+          <button class="ghost-button" id="reset-cluster-btn" type="button">Reset cluster</button>
+        </div>
+        <div class="pool-catalog" id="pool-catalog"></div>
+      </section>
+
+      <section class="top-grid">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-kicker">Scheduler Snapshot</div>
+              <h2>Current State</h2>
+            </div>
+          </div>
+          <div class="summary-grid" id="summary-grid"></div>
+        </section>
+
+        <section class="panel deploy-panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-kicker">Pod Composer</div>
+              <h2>Deploy New Pod</h2>
+            </div>
+          </div>
+
+          <form class="deploy-form" id="deploy-form">
+            <label class="field">
+              <span>Service / Image</span>
+              <select id="pod-service-select"></select>
+            </label>
+
+            <label class="field">
+              <span>CPU request</span>
+              <input id="pod-cpu-input" type="number" min="0.1" step="0.1" value="4.0">
+            </label>
+
+            <label class="field">
+              <span>Memory request, GiB</span>
+              <input id="pod-memory-input" type="number" min="0.1" step="0.1" value="8.0">
+            </label>
+
+            <div class="deploy-actions">
+              <button class="counter-button add" id="deploy-pod-btn" type="submit">Deploy pod</button>
+              <button class="ghost-button" id="clear-pods-btn" type="button">Clear pods</button>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <section class="panel deployment-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-kicker">Deployment Queue</div>
+            <h2>Pods And Placement</h2>
+          </div>
+          <div class="panel-caption">
+            Scheduled pods show the target node. Pending pods stay in the queue
+            until enough resources appear.
+          </div>
+        </div>
+        <div class="deployment-list" id="deployment-list"></div>
+      </section>
+
+      <section class="panel notes-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-kicker">Legend</div>
+            <h2>How To Read It</h2>
+          </div>
+        </div>
+        <ul class="notes-list" id="notes-list"></ul>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-kicker">Cluster Layout</div>
+            <h2>All Nodes</h2>
+          </div>
+          <div class="panel-caption">Each card shows current free resources and all pod placements for that node.</div>
+        </div>
+        <div class="nodes-grid" id="nodes-grid"></div>
+      </section>
+    </main>
+  </body>
+</html>

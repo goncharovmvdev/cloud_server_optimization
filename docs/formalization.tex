@@ -1,0 +1,91 @@
+% Formalization of the optimization problem in the cloud server optimization project
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian,english]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{hyperref}
+
+\title{Формализация задачи оптимизации\\(Cloud Server Optimization)}
+\author{cloud\_server\_optimization}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{1. Обозначения и входные данные}
+
+\paragraph{Поды (реплики).} Пусть
+\(\mathcal{P}=\{1,2,\dots,P\}\) --- множество реплик.
+Каждая реплика \(p\in\mathcal{P}\) имеет:
+\begin{align*}
+  c_p &>0 &\text{(CPU-запрос)},\\
+  m_p &>0 &\text{(память)}.
+\end{align*}
+
+\paragraph{Типы узлов (шаблоны).} Пусть
+\(\mathcal{T}=\{1,2,\dots,T\}\) --- множество типов узлов.
+Каждый тип \(t\in\mathcal{T}\) имеет параметры:
+\begin{align*}
+  C_t &>0 &\text{(CPU-ёмкость)},\\
+  M_t &>0 &\text{(память)},\\
+  P_t &\in\mathbb{Z}_{>0} &\text{(максимум подов)}.
+\end{align*}
+
+В реализации эти величины задаются через структуру \texttt{NodeTemplate}.
+
+\section*{2. Переменные}
+
+Для задания размещения вводятся бинарные переменные.
+
+\paragraph{Размещение.} Для каждого пода \(p\) и каждого (конкретного) узла \(n\) вводим:
+\[ x_{p,n}\in\{0,1\} \qquad(=1\text{, если }p\text{ запущен на }n). \]
+
+\paragraph{Активность узла.} Для каждого узла \(n\) вводим:
+\[ y_n\in\{0,1\} \qquad(=1\text{, если узел }n\text{ активен}). \]
+
+\section*{3. Ограничения}
+
+\paragraph{Каждый под размещён ровно в одном месте:}
+\[
+  \forall p:\quad \sum_n x_{p,n} = 1.
+\]
+
+\paragraph{Ограничения ресурсов на узле:}
+\begin{align*}
+  \forall n:\quad &\sum_p c_p\,x_{p,n} \le C_n, \\
+  \forall n:\quad &\sum_p m_p\,x_{p,n} \le M_n, \\
+  \forall n:\quad &\sum_p x_{p,n} \le P_n.
+\end{align*}
+
+\paragraph{Связь активности узла с размещением:}
+\[
+  \forall p,n:\quad x_{p,n} \le y_n.
+\]
+
+(Если на узле есть хотя бы один под, то он считается активным.)
+
+\section*{4. Целевая функция}
+
+Основная оптимизационная цель в проекте --- минимизировать число активных узлов:
+\[
+  \min \sum_n y_n.
+\]
+
+В моделях с учётом задержки (SLO) можно вводить дополнительные штрафы
+(например, штраф за среднюю нагрузку выше порога или за превышение порога задержки).
+В коде задействована нелинейная модель задержки:
+\[
+  \text{latency}(u) = 90 + 35u + 240\max(0, u - 0.75)^2,
+\]
+где \(u\) --- средняя загрузка CPU.
+
+\section*{5. Связь с эвристикой в коде}
+
+\begin{itemize}
+  \item \textbf{FFD (First Fit Decreasing)} реализует жадную упаковку pod-ов по узлам.
+  \item \textbf{Ребалансировка} (миграции) ограничена бюджетом миграций.
+  \item \textbf{Прогнозирование (EWMA)} используется для расчёта требуемого количества активных узлов с запасом (headroom).
+\end{itemize}
+
+\end{document}
