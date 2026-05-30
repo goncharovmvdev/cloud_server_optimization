@@ -3,128 +3,106 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Cluster Policy Viewer</title>
+    <title>Cluster Scope</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
     <script src="/app.js" defer></script>
   </head>
   <body>
-    <div class="page-glow page-glow-left"></div>
-    <div class="page-glow page-glow-right"></div>
+    <div class="aurora aurora-1"></div>
+    <div class="aurora aurora-2"></div>
+    <div class="aurora aurora-3"></div>
+    <div class="grid-overlay"></div>
 
-    <main class="page-shell">
-      <section class="hero-panel">
-        <div class="eyebrow">Visualization / Kubernetes-like Mini Cluster</div>
-        <div class="hero-layout">
-          <div class="hero-copy">
-            <h1>Manual Pod Scheduler</h1>
-            <p>
-              Соберите кластер из нод нужных типов, задайте pod request по CPU
-              и памяти, нажмите deploy и посмотрите, на какую ноду scheduler
-              положит этот pod.
-            </p>
-          </div>
-
-          <form class="controls-panel">
-            <label class="field">
-              <span>Policy</span>
-              <select id="policy-select"></select>
-            </label>
-
-            <div class="policy-readout">
-              <span class="policy-readout-label">Selected</span>
-              <span id="policy-pill" class="policy-pill">HYBRID</span>
-            </div>
-          </form>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">◆</span>
+          <span class="brand-text">Cluster<span class="brand-accent">Scope</span></span>
+          <span class="brand-sub">bin-packing playground</span>
         </div>
-      </section>
+        <div class="topbar-tag">scheduler · bin-packing (FFD + K8s scoring)</div>
+      </header>
 
-      <section class="panel inventory-panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-kicker">Cluster Builder</div>
-            <h2>Add Nodes To The Cluster</h2>
-          </div>
-          <button class="ghost-button" id="reset-cluster-btn" type="button">Reset cluster</button>
-        </div>
-        <div class="pool-catalog" id="pool-catalog"></div>
-      </section>
+      <section class="kpi-strip" id="kpi-strip"></section>
 
-      <section class="top-grid">
-        <section class="panel">
-          <div class="panel-header">
+      <div class="workspace">
+        <aside class="rail">
+          <section class="card pool-card">
+            <header class="card-head">
+              <div>
+                <span class="kicker">Capacity</span>
+                <h2>Pools</h2>
+              </div>
+              <button class="ghost danger" id="reset-cluster-btn" type="button">Reset</button>
+            </header>
+            <div class="pool-list" id="pool-catalog"></div>
+          </section>
+
+          <section class="card deploy-card">
+            <header class="card-head">
+              <div>
+                <span class="kicker">Workload</span>
+                <h2>Deploy pod</h2>
+              </div>
+            </header>
+            <form class="deploy-form" id="deploy-form">
+              <label class="field">
+                <span>Service / image</span>
+                <select id="pod-service-select"></select>
+              </label>
+              <div class="field-pair">
+                <label class="field">
+                  <span>CPU</span>
+                  <input id="pod-cpu-input" type="number" min="0.1" step="0.1" value="4.0">
+                </label>
+                <label class="field">
+                  <span>Memory (GiB)</span>
+                  <input id="pod-memory-input" type="number" min="0.1" step="0.1" value="8.0">
+                </label>
+              </div>
+              <div class="deploy-actions">
+                <button class="btn primary" id="deploy-pod-btn" type="submit">Deploy</button>
+                <button class="ghost" id="clear-pods-btn" type="button">Clear queue</button>
+              </div>
+            </form>
+          </section>
+        </aside>
+
+        <section class="canvas">
+          <header class="canvas-head">
             <div>
-              <div class="panel-kicker">Scheduler Snapshot</div>
-              <h2>Current State</h2>
+              <span class="kicker">Topology</span>
+              <h2>Cluster</h2>
             </div>
-          </div>
-          <div class="summary-grid" id="summary-grid"></div>
+            <span class="canvas-hint" id="canvas-hint">add nodes to start</span>
+          </header>
+          <div class="nodes-grid" id="nodes-grid"></div>
         </section>
+      </div>
 
-        <section class="panel deploy-panel">
-          <div class="panel-header">
-            <div>
-              <div class="panel-kicker">Pod Composer</div>
-              <h2>Deploy New Pod</h2>
-            </div>
+      <section class="card capacity-card" id="capacity-card" hidden>
+        <header class="card-head">
+          <div>
+            <span class="kicker">Capacity planning</span>
+            <h2>Bin-packing vs MILP</h2>
           </div>
-
-          <form class="deploy-form" id="deploy-form">
-            <label class="field">
-              <span>Service / Image</span>
-              <select id="pod-service-select"></select>
-            </label>
-
-            <label class="field">
-              <span>CPU request</span>
-              <input id="pod-cpu-input" type="number" min="0.1" step="0.1" value="4.0">
-            </label>
-
-            <label class="field">
-              <span>Memory request, GiB</span>
-              <input id="pod-memory-input" type="number" min="0.1" step="0.1" value="8.0">
-            </label>
-
-            <div class="deploy-actions">
-              <button class="counter-button add" id="deploy-pod-btn" type="submit">Deploy pod</button>
-              <button class="ghost-button" id="clear-pods-btn" type="button">Clear pods</button>
-            </div>
-          </form>
-        </section>
+          <span class="queue-hint" id="capacity-hint"></span>
+        </header>
+        <div class="capacity-grid" id="capacity-grid"></div>
       </section>
 
-      <section class="panel deployment-panel">
-        <div class="panel-header">
+      <section class="card queue-card">
+        <header class="card-head">
           <div>
-            <div class="panel-kicker">Deployment Queue</div>
-            <h2>Pods And Placement</h2>
+            <span class="kicker">Queue</span>
+            <h2>Pod scheduling</h2>
           </div>
-          <div class="panel-caption">
-            Scheduled pods show the target node. Pending pods stay in the queue
-            until enough resources appear.
-          </div>
-        </div>
+          <span class="queue-hint" id="queue-hint"></span>
+        </header>
         <div class="deployment-list" id="deployment-list"></div>
-      </section>
-
-      <section class="panel notes-panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-kicker">Legend</div>
-            <h2>How To Read It</h2>
-          </div>
-        </div>
-        <ul class="notes-list" id="notes-list"></ul>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-kicker">Cluster Layout</div>
-            <h2>All Nodes</h2>
-          </div>
-          <div class="panel-caption">Each card shows current free resources and all pod placements for that node.</div>
-        </div>
-        <div class="nodes-grid" id="nodes-grid"></div>
       </section>
     </main>
   </body>

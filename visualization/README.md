@@ -1,12 +1,18 @@
 # Visualization
 
-Run the dashboard from the project root:
+Интерактивный дашборд для bin-packing scheduler (FFD + K8s-like scoring).
+
+Запуск из корня проекта:
 
 ```bash
-venv/bin/python -m visualization.app
+venv/bin/python -m visualization
 ```
 
-Then open `http://127.0.0.1:8000`.
+Затем открыть `http://127.0.0.1:8000`.
 
-The dashboard uses a small 7-node visualization cluster so the full layout fits on one screen.
+## Что показывает
 
+- **Слева** — каталог пулов нод; добавляешь ноды нужных типов.
+- **Снизу слева** — очередь pod-ов; деплоишь pod с заданными CPU/RAM/service.
+- **Справа** — текущее состояние кластера: загрузка нод, размещённые pod-ы.
+- **Раскрывающийся блок у pod-а** — пошаговое решение шедулера: отсеянные ноды, breakdown score (LeastAllocated + ImageLocality), причина выбора.

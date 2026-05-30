@@ -1,20 +1,23 @@
-const policySelect = document.getElementById("policy-select");
-const policyPill = document.getElementById("policy-pill");
-const summaryGrid = document.getElementById("summary-grid");
-const notesList = document.getElementById("notes-list");
-const poolCatalog = document.getElementById("pool-catalog");
-const resetClusterButton = document.getElementById("reset-cluster-btn");
-const deployForm = document.getElementById("deploy-form");
-const podServiceSelect = document.getElementById("pod-service-select");
-const podCpuInput = document.getElementById("pod-cpu-input");
-const podMemoryInput = document.getElementById("pod-memory-input");
-const clearPodsButton = document.getElementById("clear-pods-btn");
-const deploymentList = document.getElementById("deployment-list");
-const nodesGrid = document.getElementById("nodes-grid");
+const dom = {
+  kpiStrip: document.getElementById("kpi-strip"),
+  canvasHint: document.getElementById("canvas-hint"),
+  queueHint: document.getElementById("queue-hint"),
+  poolCatalog: document.getElementById("pool-catalog"),
+  resetClusterButton: document.getElementById("reset-cluster-btn"),
+  deployForm: document.getElementById("deploy-form"),
+  podServiceSelect: document.getElementById("pod-service-select"),
+  podCpuInput: document.getElementById("pod-cpu-input"),
+  podMemoryInput: document.getElementById("pod-memory-input"),
+  clearPodsButton: document.getElementById("clear-pods-btn"),
+  deploymentList: document.getElementById("deployment-list"),
+  nodesGrid: document.getElementById("nodes-grid"),
+  capacityCard: document.getElementById("capacity-card"),
+  capacityGrid: document.getElementById("capacity-grid"),
+  capacityHint: document.getElementById("capacity-hint"),
+};
 
 const state = {
-  policy: "hybrid",
-  loadedPolicies: false,
+  scheduler: "bin-packing",
   nodeCounts: {},
   pods: [],
   serviceCatalog: [],
@@ -22,13 +25,8 @@ const state = {
   nextPodNumber: 1,
 };
 
-function formatNumber(value) {
-  return Number.parseFloat(value).toFixed(1);
-}
-
-function policyTitle(policy) {
-  return policy.toUpperCase();
-}
+const fmt = (value) => Number.parseFloat(value).toFixed(1);
+const title = (value) => value.toUpperCase();
 
 function nextPodId() {
   const id = `pod-${String(state.nextPodNumber).padStart(2, "0")}`;
@@ -37,44 +35,30 @@ function nextPodId() {
 }
 
 function recomputeNextPodNumber() {
-  const maxNumber = state.pods.reduce((currentMax, pod) => {
+  const max = state.pods.reduce((acc, pod) => {
     const match = /^pod-(\d+)$/.exec(pod.id);
-    if (!match) {
-      return currentMax;
-    }
-    return Math.max(currentMax, Number.parseInt(match[1], 10));
+    return match ? Math.max(acc, Number.parseInt(match[1], 10)) : acc;
   }, 0);
-  state.nextPodNumber = maxNumber + 1;
+  state.nextPodNumber = max + 1;
 }
 
 async function loadSnapshot() {
   const params = new URLSearchParams({
-    policy: state.policy,
     pods: JSON.stringify(state.pods),
   });
-
-  for (const [poolName, count] of Object.entries(state.nodeCounts)) {
-    params.set(`count_${poolName}`, String(count));
+  for (const [pool, count] of Object.entries(state.nodeCounts)) {
+    params.set(`count_${pool}`, String(count));
   }
 
   const response = await fetch(`/api/snapshot?${params.toString()}`);
   if (!response.ok) {
     throw new Error("Failed to load cluster snapshot");
   }
-
-  const payload = await response.json();
-  renderPayload(payload);
+  renderPayload(await response.json());
 }
 
 function renderPayload(payload) {
-  if (!state.loadedPolicies) {
-    policySelect.innerHTML = payload.policies
-      .map((policy) => `<option value="${policy}">${policyTitle(policy)}</option>`)
-      .join("");
-    state.loadedPolicies = true;
-  }
-
-  state.policy = payload.policy;
+  state.scheduler = payload.scheduler;
   state.serviceCatalog = payload.service_catalog;
   state.nodeCounts = Object.fromEntries(
     payload.pool_catalog.map((pool) => [pool.name, pool.current_count]),
@@ -85,76 +69,193 @@ function renderPayload(payload) {
     cpu_request: pod.cpu_request,
     memory_request_gib: pod.memory_request_gib,
   }));
-  if (!state.serviceCatalog.some((service) => service.id === state.selectedServiceId)) {
-    state.selectedServiceId = state.serviceCatalog.length > 0 ? state.serviceCatalog[0].id : 0;
+  if (!state.serviceCatalog.some((s) => s.id === state.selectedServiceId)) {
+    state.selectedServiceId = state.serviceCatalog[0]?.id ?? 0;
   }
   recomputeNextPodNumber();
 
-  policySelect.value = payload.policy;
-  policyPill.textContent = policyTitle(payload.policy);
-
   renderServiceSelect(payload.service_catalog);
   renderPoolCatalog(payload.pool_catalog);
-  renderSummary(payload.summary);
-  renderDeploymentList(payload.deployment_pods);
-  renderNotes(payload.notes);
+  renderKpi(payload.summary);
   renderNodes(payload.nodes);
+  renderQueue(payload.deployment_pods);
+  renderCapacityComparison(payload.capacity_comparison);
+}
+
+function renderCapacityComparison(comparison) {
+  if (!comparison) {
+    dom.capacityCard.hidden = true;
+    return;
+  }
+  dom.capacityCard.hidden = false;
+
+  const { bin_packing: bp, milp, savings, milp_error, max_per_pool } = comparison;
+
+  const savingsBadge = savings && savings.per_hour > 0
+    ? `<span class="chip lime">−$${fmt(savings.per_hour)}/h · ${fmt(savings.pct)} %</span>`
+    : savings && savings.per_hour <= 0
+      ? `<span class="chip muted">эвристика совпала с оптимумом</span>`
+      : "";
+  dom.capacityHint.innerHTML = `до ${max_per_pool} нод каждого пула · ${savingsBadge}`;
+
+  const cards = [
+    renderPlanCard("bin-packing", "FFD + cost-aware", "cyan", bp),
+    milp
+      ? renderPlanCard("MILP", "PuLP + CBC, оптимум", "lime", milp)
+      : renderMilpError(milp_error),
+  ];
+  dom.capacityGrid.innerHTML = cards.join("");
+}
+
+function renderPlanCard(title, sub, tone, plan) {
+  if (!plan) return "";
+  const poolBreakdown = Object.entries(plan.pool_counts)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, count]) => `<li><span>${name}</span><strong>×${count}</strong></li>`)
+    .join("") || `<li class="muted">пусто</li>`;
+  const unplaced = plan.unplaced_pods > 0
+    ? `<div class="plan-warn">не размещено: ${plan.unplaced_pods} pod</div>`
+    : "";
+  const nodes = (plan.nodes || []).map(renderPlannedNode).join("");
+  return `
+    <article class="plan-card ${tone}">
+      <header class="plan-head">
+        <div>
+          <div class="plan-title">${title}</div>
+          <div class="plan-sub">${sub}</div>
+        </div>
+        <div class="plan-cost">
+          <div class="plan-cost-value">$${fmt(plan.total_cost_per_hour)}<span class="plan-cost-unit">/h</span></div>
+          <div class="plan-cost-day">$${fmt(plan.total_cost_per_day)} / day</div>
+        </div>
+      </header>
+      <div class="plan-meta">
+        <span><strong>${plan.active_nodes_count}</strong> нод</span>
+      </div>
+      <ul class="plan-pools">${poolBreakdown}</ul>
+      ${nodes ? `<div class="plan-nodes">${nodes}</div>` : ""}
+      ${unplaced}
+    </article>
+  `;
+}
+
+function renderPlannedNode(node) {
+  const cpuWidth = Math.min(node.cpu_util_pct, 100);
+  const memWidth = Math.min(node.memory_util_pct, 100);
+  const pods = node.pods.length
+    ? node.pods
+        .map(
+          (pod, i) => `
+            <span class="pod-tag ${pod.service_class}" title="${pod.service_label} · ${fmt(pod.cpu_request)} cpu · ${fmt(pod.memory_request_gib)} GiB">
+              ${pod.service_label.replace(/-.*/, "")}-${i + 1}
+            </span>
+          `,
+        )
+        .join("")
+    : `<span class="no-pods">empty</span>`;
+  return `
+    <article class="plan-node pool-${node.pool_class}">
+      <header class="plan-node-head">
+        <div>
+          <div class="plan-node-id">${node.id}</div>
+          <div class="plan-node-sub">${node.pool_name} · $${fmt(node.cost_per_hour)}/h</div>
+        </div>
+        <div class="plan-node-counts">
+          <span><strong>${node.pods.length}</strong> pod${node.pods.length === 1 ? "" : "s"}</span>
+        </div>
+      </header>
+      <div class="plan-node-bars">
+        ${renderMiniBar("cpu", "CPU", node.used_cpu, node.cpu_capacity, cpuWidth)}
+        ${renderMiniBar("memory", "MEM", node.used_memory_gib, node.memory_capacity_gib, memWidth, "GiB")}
+      </div>
+      <div class="plan-node-pods">${pods}</div>
+    </article>
+  `;
+}
+
+function renderMiniBar(kind, label, used, total, width, unit = "") {
+  const u = unit ? ` ${unit}` : "";
+  return `
+    <div class="bar">
+      <div class="bar-meta">
+        <span>${label}</span>
+        <span><strong>${fmt(used)}</strong>${u} / ${fmt(total)}${u}</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill ${kind}" style="width:${width}%"></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderMilpError(message) {
+  return `
+    <article class="plan-card coral">
+      <header class="plan-head">
+        <div>
+          <div class="plan-title">MILP</div>
+          <div class="plan-sub">PuLP + CBC, оптимум</div>
+        </div>
+      </header>
+      <div class="plan-warn">solver error: ${message || "unknown"}</div>
+    </article>
+  `;
 }
 
 function renderServiceSelect(serviceCatalog) {
-  podServiceSelect.innerHTML = serviceCatalog
+  dom.podServiceSelect.innerHTML = serviceCatalog
     .map(
       (service) => `
-        <option value="${service.id}">
-          ${service.service_label} (${service.image_label})
-        </option>
+        <option value="${service.id}">${service.service_label} · ${service.image_label}</option>
       `,
     )
     .join("");
-  podServiceSelect.value = String(state.selectedServiceId);
+  dom.podServiceSelect.value = String(state.selectedServiceId);
 }
 
-function renderSummary(summary) {
+function renderKpi(summary) {
   const cards = [
     {
-      label: "Inventory Nodes",
-      value: summary.inventory_nodes,
-      subtitle: `${summary.cold_nodes} idle nodes in cluster`,
-    },
-    {
-      label: "Running Nodes",
+      tone: "cyan",
+      label: "Nodes",
       value: summary.running_nodes,
-      subtitle: "nodes with at least one scheduled pod",
+      unit: `/ ${summary.inventory_nodes}`,
+      sub: `${summary.cold_nodes} idle in inventory`,
     },
     {
-      label: "Scheduled Pods",
+      tone: "lime",
+      label: "Pods",
       value: summary.deployed_pods,
-      subtitle: `${summary.pending_pods} pending`,
+      unit: summary.pending_pods ? `· ${summary.pending_pods} pending` : "",
+      sub: summary.pending_pods ? "scheduling pressure detected" : "all requests placed",
     },
     {
-      label: "Requested CPU",
-      value: formatNumber(summary.requested_cpu),
-      subtitle: `${formatNumber(summary.cluster_cpu)} cluster CPU total`,
+      tone: "violet",
+      label: "CPU",
+      value: fmt(summary.cluster_cpu - summary.free_active_cpu),
+      unit: `/ ${fmt(summary.cluster_cpu)}`,
+      sub: `${fmt(summary.free_active_cpu)} free`,
     },
     {
-      label: "Requested Memory",
-      value: `${formatNumber(summary.requested_memory_gib)}`,
-      subtitle: `${formatNumber(summary.cluster_memory_gib)} GiB cluster total`,
-    },
-    {
-      label: "Free CPU",
-      value: formatNumber(summary.free_active_cpu),
-      subtitle: `${formatNumber(summary.free_active_memory_gib)} GiB memory free`,
+      tone: "coral",
+      label: "Cost · $/h",
+      value: `$${fmt(summary.running_cost_per_hour)}`,
+      unit: `· $${fmt(summary.running_cost_per_day)}/day`,
+      sub: summary.cluster_cost_per_hour > summary.running_cost_per_hour
+        ? `$${fmt(summary.cluster_cost_per_hour - summary.running_cost_per_hour)}/h idle in pool`
+        : "all inventory in use",
     },
   ];
 
-  summaryGrid.innerHTML = cards
+  dom.kpiStrip.innerHTML = cards
     .map(
       (card) => `
-        <article class="summary-card">
-          <div class="summary-label">${card.label}</div>
-          <div class="summary-value">${card.value}</div>
-          <div class="summary-subtitle">${card.subtitle}</div>
+        <article class="kpi ${card.tone}">
+          <div class="kpi-label">${card.label}</div>
+          <div class="kpi-value">${card.value}${
+            card.unit ? `<span class="kpi-unit">${card.unit}</span>` : ""
+          }</div>
+          <div class="kpi-sub">${card.sub}</div>
         </article>
       `,
     )
@@ -162,51 +263,31 @@ function renderSummary(summary) {
 }
 
 function renderPoolCatalog(catalog) {
-  poolCatalog.innerHTML = catalog
+  dom.poolCatalog.innerHTML = catalog
     .map(
       (pool) => `
-        <article class="pool-card pool-${pool.pool_class}">
-          <div class="pool-card-header">
-            <div>
-              <h3 class="pool-name">${pool.display_name}</h3>
-              <div class="pool-count">${pool.current_count} nodes in cluster</div>
-            </div>
-            <div class="pool-badge">${pool.name}</div>
+        <article class="pool-item pool-${pool.pool_class}">
+          <div class="pool-row">
+            <div class="pool-name">${pool.display_name}</div>
+            <div class="pool-count">×${pool.current_count} · $${fmt(pool.per_node_cost_per_hour)}/h</div>
           </div>
-
-          <div class="pool-stats">
-            <div class="pool-stat">
-              <span class="pool-stat-label">Schedulable CPU</span>
-              <span class="pool-stat-value">${formatNumber(pool.per_node_cpu)}</span>
-            </div>
-            <div class="pool-stat">
-              <span class="pool-stat-label">Schedulable Memory</span>
-              <span class="pool-stat-value">${formatNumber(pool.per_node_memory_gib)} GiB</span>
-            </div>
-            <div class="pool-stat">
-              <span class="pool-stat-label">Max Pods</span>
-              <span class="pool-stat-value">${pool.per_node_pods}</span>
-            </div>
+          <div class="pool-spec">
+            ${fmt(pool.per_node_cpu)} cpu · ${fmt(pool.per_node_memory_gib)} GiB · ${pool.per_node_pods} pods
           </div>
-
-          <div class="pool-actions">
+          <div class="pool-controls">
             <button
-              class="counter-button"
+              class="ghost"
               type="button"
               data-action="decrement"
               data-pool-name="${pool.name}"
               ${pool.current_count === 0 ? "disabled" : ""}
-            >
-              Remove
-            </button>
+            >−</button>
             <button
-              class="counter-button add"
+              class="btn subtle"
               type="button"
               data-action="increment"
               data-pool-name="${pool.name}"
-            >
-              Add node
-            </button>
+            >+ add</button>
           </div>
         </article>
       `,
@@ -214,37 +295,108 @@ function renderPoolCatalog(catalog) {
     .join("");
 }
 
-function renderDeploymentList(pods) {
-  if (pods.length === 0) {
-    deploymentList.innerHTML = `
-      <article class="deployment-empty">
-        <h3>Пока нет pod requests</h3>
-        <p>Введите CPU и Memory, затем нажмите Deploy pod.</p>
-      </article>
+function renderNodes(nodes) {
+  dom.canvasHint.textContent = nodes.length
+    ? `${nodes.length} node${nodes.length === 1 ? "" : "s"} in cluster`
+    : "add nodes to start";
+
+  if (!nodes.length) {
+    dom.nodesGrid.innerHTML = `
+      <div class="empty">
+        <h3>Cluster is empty</h3>
+        <p>Pick a pool from the rail to spin up a worker node.</p>
+      </div>
     `;
     return;
   }
 
-  deploymentList.innerHTML = pods
+  dom.nodesGrid.innerHTML = nodes
+    .map((node, index) => {
+      const cpuWidth = Math.min(node.cpu_util_pct, 100);
+      const memoryWidth = Math.min(node.memory_util_pct, 100);
+      const podWidth = node.total_pods === 0
+        ? 0
+        : (node.used_pods / node.total_pods) * 100;
+      const podsMarkup = node.pods.length
+        ? node.pods
+            .map(
+              (pod) => `
+                <span class="pod-tag ${pod.service_class}" title="${pod.service_label} · ${pod.image_label}">${pod.id}</span>
+              `,
+            )
+            .join("")
+        : `<span class="no-pods">no pods scheduled</span>`;
+
+      return `
+        <article class="node ${node.state} pool-${node.pool_class}" style="animation-delay:${index * 35}ms">
+          <header class="node-head">
+            <div>
+              <h3 class="node-id">${node.id}</h3>
+              <div class="node-pool">${node.pool_name} · $${fmt(node.cost_per_hour)}/h</div>
+            </div>
+            <span class="state ${node.state}">${node.state}</span>
+          </header>
+
+          <div class="bars">
+            ${renderBar("cpu", "CPU", node.used_cpu, node.total_cpu, cpuWidth)}
+            ${renderBar("memory", "MEM", node.used_memory_gib, node.total_memory_gib, memoryWidth, "GiB")}
+            ${renderBar("pods", "PODS", node.used_pods, node.total_pods, podWidth)}
+          </div>
+
+          <div class="node-pods">${podsMarkup}</div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderBar(kind, label, used, total, width, unit = "") {
+  const u = unit ? ` ${unit}` : "";
+  return `
+    <div class="bar">
+      <div class="bar-meta">
+        <span>${label}</span>
+        <span><strong>${fmt(used)}</strong>${u} / ${fmt(total)}${u}</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill ${kind}" style="width:${width}%"></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderQueue(pods) {
+  const scheduled = pods.filter((pod) => pod.status === "scheduled").length;
+  const pending = pods.filter((pod) => pod.status === "pending").length;
+  dom.queueHint.textContent = pods.length
+    ? `${scheduled} scheduled · ${pending} pending`
+    : "empty";
+
+  if (!pods.length) {
+    dom.deploymentList.innerHTML = `
+      <div class="empty">
+        <h3>Queue is empty</h3>
+        <p>Fill the deploy form on the left and hit <strong>Deploy</strong> to enqueue a pod.</p>
+      </div>
+    `;
+    return;
+  }
+
+  dom.deploymentList.innerHTML = pods
     .map(
       (pod) => `
-        <article class="deployment-row ${pod.status}">
+        <article class="deployment-row service-${pod.service_id} ${pod.status}">
           <div class="deployment-main">
-            <div class="deployment-name">${pod.id}</div>
-            <div class="deployment-service">${pod.service_label} / ${pod.image_label}</div>
-            <div class="deployment-reqs">${formatNumber(pod.cpu_request)} CPU / ${formatNumber(pod.memory_request_gib)} GiB</div>
+            <div class="deployment-id">${pod.id}</div>
+            <div class="deployment-service">${pod.service_label} · ${pod.image_label}</div>
+            <div class="deployment-reqs">${fmt(pod.cpu_request)} cpu · ${fmt(pod.memory_request_gib)} GiB</div>
           </div>
           <div class="deployment-status">
-            <div class="deployment-status-chip ${pod.status}">${pod.status}</div>
-            <div class="deployment-status-text">${pod.status_label}</div>
+            <span class="chip ${pod.status}">${pod.status}</span>
+            <span class="deployment-status-text">${pod.status_label}</span>
           </div>
-          <button
-            class="deployment-remove"
-            type="button"
-            data-action="remove-pod"
-            data-pod-id="${pod.id}"
-          >
-            Remove
+          <button class="deployment-remove" type="button" data-action="remove-pod" data-pod-id="${pod.id}">
+            remove
           </button>
           ${renderSchedulerDecision(pod.scheduler_decision)}
         </article>
@@ -254,41 +406,33 @@ function renderDeploymentList(pods) {
 }
 
 function renderSchedulerDecision(decision) {
-  if (!decision) {
-    return "";
-  }
+  if (!decision) return "";
 
-  const orderMode = decision.sort_largest_pods_first
-    ? "pod'ы отсортированы по размеру перед планированием"
-    : "pod'ы планируются в порядке поступления";
-
-  const nodeEvaluations = decision.node_evaluations
+  const cards = decision.node_evaluations
     .map((evaluation) => renderNodeEvaluation(evaluation))
     .join("");
 
   return `
-    <details class="decision-details">
-      <summary class="decision-summary">
-        <span class="decision-summary-title">Решение шедулера</span>
-        <span class="decision-summary-text">${decision.summary}</span>
+    <details class="decision">
+      <summary>
+        <span>scheduler decision</span>
+        <span class="decision-text">${decision.summary}</span>
       </summary>
       <div class="decision-meta">
-        <div class="decision-meta-item">
-          <span class="decision-meta-label">Политика</span>
-          <span class="decision-meta-value">${policyTitle(decision.policy)}</span>
+        <div class="decision-meta-cell">
+          <div class="decision-meta-label">scheduler</div>
+          <div class="decision-meta-value">${title(decision.scheduler)}</div>
         </div>
-        <div class="decision-meta-item">
-          <span class="decision-meta-label">Порядок</span>
-          <span class="decision-meta-value">шаг ${decision.schedule_step}/${decision.total_pods_in_order}, ${orderMode}</span>
+        <div class="decision-meta-cell">
+          <div class="decision-meta-label">step</div>
+          <div class="decision-meta-value">${decision.schedule_step} of ${decision.total_pods_in_order} · sorted by size</div>
         </div>
-        <div class="decision-meta-item">
-          <span class="decision-meta-label">Веса</span>
-          <span class="decision-meta-value">fit ${formatNumber(decision.weights.node_resources_fit)} / balance ${formatNumber(decision.weights.balanced_allocation)} / image ${formatNumber(decision.weights.image_locality)}</span>
+        <div class="decision-meta-cell">
+          <div class="decision-meta-label">weights</div>
+          <div class="decision-meta-value">fit ${fmt(decision.weights.node_resources_fit)} · image ${fmt(decision.weights.image_locality)}</div>
         </div>
       </div>
-      <div class="decision-grid">
-        ${nodeEvaluations}
-      </div>
+      <div class="decision-grid">${cards}</div>
     </details>
   `;
 }
@@ -298,207 +442,71 @@ function renderNodeEvaluation(evaluation) {
     const reasons = evaluation.filter_reasons
       .map((reason) => `<li>${reason}</li>`)
       .join("");
-
     return `
       <article class="decision-card filtered">
-        <header class="decision-card-header">
+        <div class="decision-card-head">
           <div>
-            <div class="decision-node-id">${evaluation.node_id}</div>
-            <div class="decision-node-pool">${evaluation.pool_name}</div>
+            <div class="decision-node">${evaluation.node_id}</div>
+            <div class="decision-node-sub">${evaluation.pool_name}</div>
           </div>
-          <div class="decision-chip filtered">Отсеяна</div>
-        </header>
-        <div class="decision-card-text">${evaluation.decision_reason}</div>
-        <div class="decision-prestate">
-          до размещения: ${formatNumber(evaluation.free_cpu_before)} CPU свободно / ${formatNumber(evaluation.free_memory_before_gib)} GiB свободно / ${evaluation.free_pods_before} pod-слотов
+          <span class="chip filtered">filtered</span>
         </div>
-        <ul class="decision-reasons">
-          ${reasons}
-        </ul>
+        <div class="decision-reason">${evaluation.decision_reason}</div>
+        <ul class="decision-reasons">${reasons}</ul>
       </article>
     `;
   }
 
   const breakdown = evaluation.score_breakdown;
-  const chosenClass = evaluation.rank === 1 ? " chosen" : "";
-  const chosenLabel = evaluation.rank === 1 ? "Выбрана" : `Ранг ${evaluation.rank}`;
-  const imageLocality = breakdown.has_same_service_on_node ? "на ноде уже есть такой service/image" : "для service/image нода холодная";
-
+  const chosen = evaluation.rank === 1;
   return `
-    <article class="decision-card scored${chosenClass}">
-      <header class="decision-card-header">
+    <article class="decision-card scored ${chosen ? "chosen" : ""}">
+      <div class="decision-card-head">
         <div>
-          <div class="decision-node-id">${evaluation.node_id}</div>
-          <div class="decision-node-pool">${evaluation.pool_name}</div>
+          <div class="decision-node">${evaluation.node_id}</div>
+          <div class="decision-node-sub">${evaluation.pool_name}</div>
         </div>
-        <div class="decision-chip scored">${chosenLabel}</div>
-      </header>
-      <div class="decision-card-text">${evaluation.decision_reason}</div>
-      <div class="decision-score-grid">
-        <div class="decision-score-item">
-          <span class="decision-score-label">Итог</span>
-          <span class="decision-score-value">${formatNumber(breakdown.weighted_total)}</span>
-        </div>
-        <div class="decision-score-item">
-          <span class="decision-score-label">LeastAllocated</span>
-          <span class="decision-score-value">${formatNumber(breakdown.node_resources_fit)}</span>
-        </div>
-        <div class="decision-score-item">
-          <span class="decision-score-label">Баланс</span>
-          <span class="decision-score-value">${formatNumber(breakdown.balanced_allocation)}</span>
-        </div>
-        <div class="decision-score-item">
-          <span class="decision-score-label">ImageLocality</span>
-          <span class="decision-score-value">${formatNumber(breakdown.image_locality)}</span>
-        </div>
+        <span class="chip scored">${chosen ? "chosen" : `#${evaluation.rank}`}</span>
       </div>
-      <div class="decision-prestate">
-        до размещения: ${formatNumber(evaluation.free_cpu_before)} CPU свободно / ${formatNumber(evaluation.free_memory_before_gib)} GiB свободно / ${evaluation.free_pods_before} pod-слотов
+      <div class="decision-reason">${evaluation.decision_reason}</div>
+      <div class="decision-scores">
+        ${renderScoreCell("total", breakdown.weighted_total)}
+        ${renderScoreCell("least-alloc", breakdown.node_resources_fit)}
+        ${renderScoreCell("locality", breakdown.image_locality)}
       </div>
-      <div class="decision-poststate">
-        после размещения: ${formatNumber(breakdown.free_cpu_after)} CPU свободно / ${formatNumber(breakdown.free_memory_after_gib)} GiB свободно
+      <div class="decision-after">
+        <span>${fmt(breakdown.cpu_util_after_pct)}% cpu after</span>
+        <span>${fmt(breakdown.memory_util_after_pct)}% mem after</span>
       </div>
-      <div class="decision-poststate">
-        загрузка после: ${formatNumber(breakdown.cpu_util_after_pct)}% CPU / ${formatNumber(breakdown.memory_util_after_pct)}% памяти
-      </div>
-      <div class="decision-poststate">${imageLocality}</div>
     </article>
   `;
 }
 
-function renderNotes(notes) {
-  notesList.innerHTML = notes.map((note) => `<li>${note}</li>`).join("");
-}
-
-function renderNodes(nodes) {
-  if (nodes.length === 0) {
-    nodesGrid.innerHTML = `
-      <article class="cluster-empty">
-        <h3>Кластер пока пуст</h3>
-        <p>Добавьте хотя бы одну ноду в секции выше, и после этого pod deployment начнёт отображать placement.</p>
-      </article>
-    `;
-    return;
-  }
-
-  nodesGrid.innerHTML = nodes
-    .map((node, index) => {
-      const cpuWidth = Math.min(node.cpu_util_pct, 100);
-      const memoryWidth = Math.min(node.memory_util_pct, 100);
-      const podWidth = node.total_pods === 0 ? 0 : (node.used_pods / node.total_pods) * 100;
-      const podsMarkup = node.pods.length
-        ? node.pods
-            .map(
-              (pod) => `
-                <article class="pod-chip ${pod.service_class}">
-                  <div class="pod-chip-header">
-                    <span class="pod-service">${pod.service_label}</span>
-                    <span class="pod-id">${pod.id}</span>
-                  </div>
-                  <div class="pod-chip-image">${pod.image_label}</div>
-                  <div class="pod-chip-meta">
-                    <span>${formatNumber(pod.cpu_request)} CPU</span>
-                    <span>${formatNumber(pod.memory_request_gib)} GiB</span>
-                  </div>
-                </article>
-              `,
-            )
-            .join("")
-        : `
-            <div class="pods-empty">
-              На этой ноде пока нет задеплоенных pod'ов.
-            </div>
-          `;
-
-      return `
-        <article
-          class="node-card pool-${node.pool_class} state-${node.state}"
-          style="animation-delay: ${index * 40}ms"
-        >
-          <header class="node-card-header">
-            <div>
-              <h3 class="node-id">${node.id}</h3>
-              <div class="node-pool">${node.pool_name}</div>
-            </div>
-            <div class="status-chip ${node.state}">${node.status_label}</div>
-          </header>
-
-          <div class="resource-stack">
-            <div class="resource-row">
-              <div class="resource-meta">
-                <span class="resource-name">CPU</span>
-                <span class="resource-value">${formatNumber(node.free_cpu)} free / ${formatNumber(node.total_cpu)} max</span>
-              </div>
-              <div class="resource-bar">
-                <div class="resource-fill" style="width:${cpuWidth}%"></div>
-              </div>
-            </div>
-
-            <div class="resource-row">
-              <div class="resource-meta">
-                <span class="resource-name">Memory</span>
-                <span class="resource-value">${formatNumber(node.free_memory_gib)} GiB free / ${formatNumber(node.total_memory_gib)} GiB max</span>
-              </div>
-              <div class="resource-bar">
-                <div class="resource-fill memory" style="width:${memoryWidth}%"></div>
-              </div>
-            </div>
-
-            <div class="resource-row">
-              <div class="resource-meta">
-                <span class="resource-name">Pod Slots</span>
-                <span class="resource-value">${node.free_pods} free / ${node.total_pods} max</span>
-              </div>
-              <div class="resource-bar">
-                <div class="resource-fill pods" style="width:${podWidth}%"></div>
-              </div>
-            </div>
-          </div>
-
-          <section class="pods-section">
-            <div class="pods-section-header">
-              <span class="pods-title">Pods on node</span>
-              <span class="pods-count">${node.used_pods}/${node.total_pods}</span>
-            </div>
-            <div class="pods-grid">
-              ${podsMarkup}
-            </div>
-          </section>
-
-          <footer class="node-footer">
-            <span>used CPU ${formatNumber(node.used_cpu)}</span>
-            <span>used pods ${node.used_pods}</span>
-          </footer>
-        </article>
-      `;
-    })
-    .join("");
+function renderScoreCell(label, value) {
+  const width = Math.max(0, Math.min(100, Number(value)));
+  return `
+    <div class="decision-score">
+      <div class="decision-score-label">${label}</div>
+      <div class="decision-score-value">${fmt(value)}</div>
+      <div class="decision-fill"><span style="width:${width}%"></span></div>
+    </div>
+  `;
 }
 
 function installListeners() {
-  policySelect.addEventListener("change", () => {
-    state.policy = policySelect.value;
-    loadSnapshot().catch(renderError);
-  });
-
-  podServiceSelect.addEventListener("change", () => {
-    const serviceId = Number.parseInt(podServiceSelect.value, 10);
+  dom.podServiceSelect.addEventListener("change", () => {
+    const serviceId = Number.parseInt(dom.podServiceSelect.value, 10);
     if (Number.isInteger(serviceId) && serviceId >= 0) {
       state.selectedServiceId = serviceId;
     }
   });
 
-  poolCatalog.addEventListener("click", (event) => {
+  dom.poolCatalog.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLElement)) {
-      return;
-    }
-
+    if (!(target instanceof HTMLElement)) return;
     const poolName = target.dataset.poolName;
     const action = target.dataset.action;
-    if (!poolName || !action) {
-      return;
-    }
+    if (!poolName || !action) return;
 
     const current = state.nodeCounts[poolName] ?? 0;
     if (action === "increment") {
@@ -506,62 +514,51 @@ function installListeners() {
     } else if (action === "decrement") {
       state.nodeCounts[poolName] = Math.max(current - 1, 0);
     }
-
     loadSnapshot().catch(renderError);
   });
 
-  resetClusterButton.addEventListener("click", () => {
-    for (const poolName of Object.keys(state.nodeCounts)) {
-      state.nodeCounts[poolName] = 0;
+  dom.resetClusterButton.addEventListener("click", () => {
+    for (const name of Object.keys(state.nodeCounts)) {
+      state.nodeCounts[name] = 0;
     }
     loadSnapshot().catch(renderError);
   });
 
-  deployForm.addEventListener("submit", (event) => {
+  dom.deployForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    const serviceId = Number.parseInt(podServiceSelect.value, 10);
-    const cpuRequest = Number.parseFloat(podCpuInput.value);
-    const memoryRequest = Number.parseFloat(podMemoryInput.value);
+    const serviceId = Number.parseInt(dom.podServiceSelect.value, 10);
+    const cpu = Number.parseFloat(dom.podCpuInput.value);
+    const memory = Number.parseFloat(dom.podMemoryInput.value);
     if (!Number.isInteger(serviceId) || serviceId < 0) {
-      renderError(new Error("Select a valid service/image"));
+      renderError(new Error("Select a valid service / image"));
       return;
     }
-    if (!(cpuRequest > 0) || !(memoryRequest > 0)) {
-      renderError(new Error("Service, CPU and Memory requests must be valid"));
+    if (!(cpu > 0) || !(memory > 0)) {
+      renderError(new Error("CPU and memory must be positive"));
       return;
     }
-
     state.selectedServiceId = serviceId;
     state.pods.push({
       id: nextPodId(),
       service_id: serviceId,
-      cpu_request: cpuRequest,
-      memory_request_gib: memoryRequest,
+      cpu_request: cpu,
+      memory_request_gib: memory,
     });
     loadSnapshot().catch(renderError);
   });
 
-  clearPodsButton.addEventListener("click", () => {
+  dom.clearPodsButton.addEventListener("click", () => {
     state.pods = [];
     recomputeNextPodNumber();
     loadSnapshot().catch(renderError);
   });
 
-  deploymentList.addEventListener("click", (event) => {
+  dom.deploymentList.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLElement)) {
-      return;
-    }
-
-    if (target.dataset.action !== "remove-pod") {
-      return;
-    }
-
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.action !== "remove-pod") return;
     const podId = target.dataset.podId;
-    if (!podId) {
-      return;
-    }
-
+    if (!podId) return;
     state.pods = state.pods.filter((pod) => pod.id !== podId);
     recomputeNextPodNumber();
     loadSnapshot().catch(renderError);
@@ -569,11 +566,11 @@ function installListeners() {
 }
 
 function renderError(error) {
-  summaryGrid.innerHTML = `
-    <article class="summary-card">
-      <div class="summary-label">Error</div>
-      <div class="summary-value">Unavailable</div>
-      <div class="summary-subtitle">${error.message}</div>
+  dom.kpiStrip.innerHTML = `
+    <article class="kpi coral">
+      <div class="kpi-label">Error</div>
+      <div class="kpi-value">offline</div>
+      <div class="kpi-sub">${error.message}</div>
     </article>
   `;
 }

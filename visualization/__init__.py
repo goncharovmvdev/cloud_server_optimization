@@ -1,2 +1,1 @@
-"""Interactive visualization package for cluster policy snapshots."""
-
+"""Interactive bin-packing scheduler dashboard"""
